@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Super Mario Web - 30 Levels Edition</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #05050f;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Courier New', Courier, monospace;
+            color: white;
+            overflow: hidden;
+        }
+        #game-container {
+            position: relative;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+            border: 6px solid #333;
+            border-radius: 4px;
+        }
+        canvas {
+            display: block;
+            background: linear-gradient(to bottom, #729fff 0%, #a0c4ff 70%, #e0e9ff 100%);
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 15px 25px;
+            box-sizing: border-box;
+            display: flex;
+            justify-content: space-between;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 3px 3px 0px #000;
+            pointer-events: none;
+        }
+        .screen-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            border: 4px solid #fcc018;
+            padding: 30px;
+            text-align: center;
+            border-radius: 10px;
+            display: none;
+            width: 350px;
+        }
+        .screen-overlay h1 { color: #fcc018; margin: 0 0 10px 0; font-size: 32px; }
+        .screen-overlay button {
+            background: #e41800; color: white; border: none; padding: 10px 20px;
+            font-family: 'Courier New', Courier, monospace; font-size: 16px; font-weight: bold;
+            cursor: pointer; border-radius: 4px; margin-top: 15px; box-shadow: 0 4px 0 #900;
+        }
+        .screen-overlay button:active { transform: translateY(4px); box-shadow: none; }
+    </style>
+</head>
+<body>
+
+<div style="margin-bottom: 10px; text-align: center; opacity: 0.7; font-size: 13px;">
+    KONTROL: [A/D] atau [PANAH] - Gerak | [W], [SPASI], [PANAH ATAS] - Lompat
+</div>
+
+<div id="game-container">
+    <div id="ui-layer">
+        <div>MARIO<br><span id="scoreLabel">000000</span></div>
+        <div>COINS<br>🪙 x<span id="coinLabel">0</span></div>
+        <div>LIVES<br>❤️ x<span id="livesLabel">3</span></div>
+        <div>WORLD<br>1-<span id="worldLabel">1</span></div>
+    </div>
+    
+    <div id="winScreen" class="screen-overlay">
+        <h1 id="winTitle">STAGE CLEAR!</h1>
+        <p id="winProgress">Kamu berhasil melewati World 1-1</p>
+        <p style="font-size: 14px; color: #aaa;">Mempersiapkan level berikutnya...</p>
+    </div>
+
+    <div id="gameOverScreen" class="screen-overlay">
+        <h1 style="color: #ff2424;">GAME OVER</h1>
+        <p>Kamu kehabisan nyawa!</p>
+        <button onclick="restartWholeGame()">MAIN LAGI</button>
+    </div>
+
+    <canvas id="gameCanvas" width="800" height="440"></canvas>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- State Utama Game ---
+let currentLevel = 1;
+const MAX_LEVELS = 30;
+let lives = 3;
+let score = 0;
+let coins = 0;
+let gameActive = true;
+let cameraX = 0;
+
+// --- Konfigurasi Fisika ---
+const GRAVITY = 0.6;
+const GROUND_Y = canvas.height - 50;
+let LEVEL_END_X = 3500; // Akan memanjang seiring bertambahnya level
+
+// --- Karakter Mario ---
+const mario = {
+    x: 100, y: GROUND_Y - 40,
+    width: 28, height: 38,
+    velocityX: 0, velocityY: 0,
+    speed: 5.5, jumpForce: 13.5,
+    isGrounded: false, facing: 'right',
+    animFrame: 0, isWalking: false
+};
+
+// --- Array Data Level (Dibuat otomatis oleh generator) ---
+let platforms = [];
+let items = [];
+let clouds = [];
+let bushes = [];
+let flagpole = { x: 0, y: GROUND_Y - 280, width: 12, height: 280, flagY: 0, flagW: 45, flagH: 32 };
+
+// --- Input Keyboard ---
+const keys = {};
+window.addEventListener('keydown', (e) => keys[e.code] = true);
+window.addEventListener('keyup', (e) => keys[e.code] = false);
+
+// ==========================================
+// GENERATOR LEVEL OTOMATIS (Mendukung hingga Level 30)
+// ==========================================
+function generateLevel(levelNo) {
+    platforms = [];
+    items = [];
+    clouds = [];
+    bushes = [];
+
+    // Semakin tinggi level, map akan semakin panjang dan menantang
+    LEVEL_END_X = 2500 + (levelNo * 300); 
+
+    // Generate Awan & Semak Dekoratif secara acak sepanjang map
+    for (let x = 100; x < LEVEL_END_X - 400; x += Math.random() * 300 + 200) {
+        clouds.push({ x: x, y: Math.random() * 80 + 30, size: Math.floor(Math.random() * 3) + 2 });
+    }
+    for (let x = 150; x < LEVEL_END_X - 500; x += Math.random() * 400 + 300) {
+        bushes.push({ x: x, w: Math.random() * 50 + 50 });
+    }
+
+    let currentX = 0;
+
+    // Loop pembuatan segmen tanah dan rintangan secara dinamis
+    while (currentX < LEVEL_END_X - 400) {
+        // Tentukan panjang bongkahan tanah dasar (makin tinggi level, tanah makin pendek/banyak jurang)
+        let groundWidth = Math.max(300, 800 - (levelNo * 15)); 
+        platforms.push({ type: 'ground', x: currentX, y: GROUND_Y, width: groundWidth, height: 50 });
+
+        // Beri rintangan di atas segmen tanah yang sedang dibuat
+        let obstacleX = currentX + 200;
+        while (obstacleX < currentX + groundWidth - 100) {
+            let rand = Math.random();
+
+            if (rand < 0.25) {
+                // Buat Pipa Hijau (tinggi bervariasi)
+                let pipeH = 60 + Math.floor(Math.random() * 3) * 20;
+                platforms.push({ type: 'pipe', x: obstacleX, y: GROUND_Y - pipeH, width: 60, height: pipeH });
+                obstacleX += 140;
+            } else if (rand < 0.6) {
+                // Buat Susunan Balok Bata & Balok Hadiah (?)
+                let blockY = GROUND_Y - 120 - (Math.random() > 0.5 ? 40 : 0);
+                let count = Math.floor(Math.random() * 3) + 2;
+                for (let i = 0; i < count; i++) {
+                    let bType = (i === Math.floor(count/2)) ? 'lucky' : 'brick';
+                    platforms.push({ type: 'brick', x: obstacleX + (i * 32), y: blockY, width: 32, height: 32 });
+                    if (bType === 'lucky') {
+                        // Ganti brick tengah jadi kotak hadiah secara acak
+                        platforms[platforms.length-1].type = 'lucky';
+                        platforms[platforms.length-1].active = true;
+                    }
+                    // Taruh koin di atas balok
+                    if (Math.random() > 0.4) {
+                        items.push({ x: obstacleX + (i * 32) + 4, y: blockY - 40, width: 24, height: 24, collected: false });
+                    }
+                }
+                obstacleX += (count * 32) + 100;
+            } else {
+                obstacleX += 150;
+            }
+        }
+
+        currentX += groundWidth;
+        
+        // Buat JURANG (Gaps) antar tanah dasar (makin tinggi level, jurang bisa makin lebar)
+        let gapWidth = 70 + Math.min(60, (levelNo * 2)) + (Math.random() * 20);
+        currentX += gapWidth; 
+    }
+
+    // Buat Area Landasan Finis yang aman di ujung peta
+    platforms.push({ type: 'ground', x: LEVEL_END_X - 450, y: GROUND_Y, width: 450, height: 50 });
+
+    // Struktur Tangga Finis Khas Mario sebelum tiang
+    let stairStartX = LEVEL_END_X - 380;
+    let steps = Math.min(7, 3 + Math.floor(levelNo / 5)); // Tangga makin tinggi di level atas
+    for (let i = 0; i < steps; i++) {
+        platforms.push({ 
+            type: 'brick', 
+            x: stairStartX + (i * 32), 
+            y: GROUND_Y - ((i + 1) * 32), 
+            width: (steps - i) * 32, 
+            height: 32 
+        });
+    }
+
+    // Set Posisi Tiang Finis
+    flagpole.x = LEVEL_END_X - 150;
+    flagpole.flagY = GROUND_Y - 270;
+}
+
+// ==========================================
+// RENDER GRAFIS (Pixel Art Engine)
+// ==========================================
+function drawMario(ctx, m) {
+    ctx.save();
+    ctx.translate(m.x + m.width/2, m.y + m.height/2);
+    if (m.facing === 'left') ctx.scale(-1, 1);
+    let legOffset = (m.isWalking && m.isGrounded) ? Math.sin(m.animFrame * 0.3) * 4 : 0;
+
+    ctx.fillStyle = '#0020b0'; ctx.fillRect(-m.width/2 + 2, -m.height/2 + 16, m.width - 4, m.height - 20); // Overalls
+    ctx.fillStyle = '#5c2c00'; // Sepatu
+    ctx.fillRect(-m.width/2 + 2, m.height/2 - 6 + (legOffset > 0 ? -2 : 0), m.width/2 - 1, 6);
+    ctx.fillRect(1, m.height/2 - 6 + (legOffset < 0 ? -2 : 0), m.width/2 - 1, 6);
+    ctx.fillStyle = '#e41800'; ctx.fillRect(-m.width/2 + 4, -m.height/2 + 12, m.width - 8, 6); // Baju
+    ctx.fillRect(-m.width/2, -m.height/2 + 15, 5, 10); ctx.fillRect(m.width/2 - 5, -m.height/2 + 15, 5, 10);
+    ctx.fillStyle = '#ffcca4'; ctx.fillRect(-m.width/2 + 4, -m.height/2 + 2, m.width - 8, 11); // Muka
+    ctx.fillStyle = '#401000'; ctx.fillRect(m.width/2 - 4, -m.height/2 + 5, 6, 5); ctx.fillRect(m.width/2 - 6, -m.height/2 + 9, 6, 3); // Kumis/Hidung
+    ctx.fillStyle = '#000'; ctx.fillRect(m.width/2 - 8, -m.height/2 + 4, 3, 4); // Mata
+    ctx.fillStyle = '#e41800'; ctx.fillRect(-m.width/2 + 2, -m.height/2 - 3, m.width - 2, 6); ctx.fillRect(-m.width/2 + 4, -m.height/2 - 5, m.width - 6, 3); // Topi
+    ctx.restore();
+}
+
+function drawBlock(ctx, p) {
+    if (p.type === 'ground') {
+        ctx.fillStyle = '#d87800'; ctx.fillRect(p.x, p.y, p.width, p.height);
+        ctx.fillStyle = '#fcb43c'; ctx.fillRect(p.x, p.y, p.width, 6);
+        ctx.fillStyle = '#944400';
+        for (let i = 0; i < p.width; i += 32) { ctx.fillRect(p.x + i, p.y + 16, 4, 16); }
+    } else if (p.type === 'brick') {
+        ctx.fillStyle = '#b84400'; ctx.fillRect(p.x, p.y, p.width, p.height);
+        ctx.strokeStyle = '#ffb494'; ctx.lineWidth = 1.5; ctx.strokeRect(p.x, p.y, p.width, p.height);
+    } else if (p.type === 'lucky') {
+        ctx.fillStyle = p.active ? '#fc9c00' : '#747474'; ctx.fillRect(p.x, p.y, p.width, p.height);
+        ctx.strokeStyle = '#000'; ctx.strokeRect(p.x, p.y, p.width, p.height);
+        if (p.active) { ctx.fillStyle = '#fff'; ctx.font = 'bold 20px Arial'; ctx.fillText('?', p.x + 10, p.y + 24); }
+    } else if (p.type === 'pipe') {
+        let grad = ctx.createLinearGradient(p.x, p.y, p.x + p.width, p.y);
+        grad.addColorStop(0, '#00a800'); grad.addColorStop(0.3, '#80ff80'); grad.addColorStop(1, '#004800');
+        ctx.fillStyle = grad; ctx.fillRect(p.x + 4, p.y, p.width - 8, p.height); ctx.fillRect(p.x, p.y, p.width, 24);
+        ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.strokeRect(p.x, p.y, p.width, 24); ctx.strokeRect(p.x + 4, p.y + 24, p.width - 8, p.height - 24);
+    }
+}
+
+// ==========================================
+// LOGIKA GAMEPLAY & LOOPING
+// ==========================================
+function update() {
+    if (!gameActive) return;
+    mario.animFrame++;
+
+    // Gerak Horizontal
+    if (keys['ArrowRight'] || keys['KeyD']) {
+        mario.velocityX = mario.speed; mario.facing = 'right'; mario.isWalking = true;
+    } else if (keys['ArrowLeft'] || keys['KeyA']) {
+        mario.velocityX = -mario.speed; mario.facing = 'left'; mario.isWalking = true;
+    } else {
+        mario.velocityX = 0; mario.isWalking = false;
+    }
+
+    // Lompat
+    if ((keys['ArrowUp'] || keys['Space'] || keys['KeyW']) && mario.isGrounded) {
+        mario.velocityY = -mario.jumpForce; mario.isGrounded = false;
+    }
+
+    mario.velocityY += GRAVITY;
+    mario.x += mario.velocityX;
+    mario.y += mario.velocityY;
+
+    if (mario.x < 0) mario.x = 0;
+
+    // Kamera Scrolling
+    if (mario.x > canvas.width / 2.5) cameraX = mario.x - canvas.width / 2.5;
+    if (cameraX > LEVEL_END_X - canvas.width) cameraX = LEVEL_END_X - canvas.width;
+
+    mario.isGrounded = false;
+
+    // Deteksi Tabrakan Platform
+    platforms.forEach(p => {
+        if (mario.x < p.x + p.width && mario.x + mario.width > p.x && mario.y < p.y + p.height && mario.y + mario.height > p.y) {
+            if (mario.velocityY > 0 && mario.y + mario.height - mario.velocityY <= p.y) {
+                mario.y = p.y - mario.height; mario.velocityY = 0; mario.isGrounded = true;
+            } else if (mario.velocityY < 0 && mario.y - mario.velocityY >= p.y + p.height) {
+                mario.y = p.y + p.height; mario.velocityY = 0;
+                if (p.type === 'lucky' && p.active) {
+                    p.active = false; coins++; score += 200; updateUI();
+                }
+            } else {
+                mario.x -= mario.velocityX;
+            }
+        }
+    });
+
+    // Deteksi Ambil Koin
+    items.forEach(coin => {
+        if (!coin.collected && mario.x < coin.x + coin.width && mario.x + mario.width > coin.x && mario.y < coin.y + coin.height && mario.y + mario.height > coin.y) {
+            coin.collected = true; coins++; score += 100; updateUI();
+        }
+    });
+
+    // Deteksi Menyentuh Tiang Finis (Menang Level)
+    if (mario.x + mario.width >= flagpole.x && mario.x <= flagpole.x + flagpole.width && mario.y + mario.height >= flagpole.y) {
+        gameActive = false;
+        triggerLevelClear();
+    }
+
+    // Kondisi Kalah: Jatuh ke jurang
+    if (mario.y > canvas.height) {
+        handlePlayerDeath();
+    }
+}
+
+function handlePlayerDeath() {
+    lives--;
+    updateUI();
+    if (lives > 0) {
+        // Jika masih ada nyawa, reset ke awal level ini
+        resetPlayerPosition();
+    } else {
+        // Jika nyawa habis (0), Game Over
+        gameActive = false;
+        document.getElementById('gameOverScreen').style.display = 'block';
+    }
+}
+
+function triggerLevelClear() {
+    const winScreen = document.getElementById('winScreen');
+    const winTitle = document.getElementById('winTitle');
+    const winProgress = document.getElementById('winProgress');
+    
+    // Putar animasi bendera turun singkat
+    let animCount = 0;
+    let winAnim = setInterval(() => {
+        if (flagpole.flagY < GROUND_Y - flagpole.flagH) flagpole.flagY += 5;
+        if (mario.y < GROUND_Y - mario.height) mario.y += 3;
+        draw();
+        animCount++;
+        
+        if (animCount > 60) {
+            clearInterval(winAnim);
+            
+            if (currentLevel >= MAX_LEVELS) {
+                winTitle.innerHTML = "🏆 KEMENANGAN TOTAL! 🏆";
+                winProgress.innerHTML = "Hebat! Kamu berhasil menamatkan seluruh 30 Level!";
+                winScreen.style.display = 'block';
+            } else {
+                winTitle.innerHTML = "STAGE CLEAR!";
+                winProgress.innerHTML = `Kamu berhasil melewati World 1-${currentLevel}`;
+                winScreen.style.display = 'block';
+                
+                setTimeout(() => {
+                    winScreen.style.display = 'none';
+                    currentLevel++;
+                    score += 1000; // Bonus skor tamat level
+                    updateUI();
+                    generateLevel(currentLevel);
+                    resetPlayerPosition();
+                    gameActive = true;
+                }, 3000);
+            }
+        }
+    }, 1000/60);
+}
+
+function updateUI() {
+    document.getElementById('scoreLabel').innerText = String(score).padStart(6, '0');
+    document.getElementById('coinLabel').innerText = coins;
+    document.getElementById('livesLabel').innerText = lives;
+    document.getElementById('worldLabel').innerText = currentLevel;
+}
+
+function resetPlayerPosition() {
+    mario.x = 100; mario.y = GROUND_Y - 40;
+    mario.velocityX = 0; mario.velocityY = 0;
+    cameraX = 0;
+}
+
+function restartWholeGame() {
+    // Reset total dari level 1 dan nyawa kembali ke 3
+    document.getElementById('gameOverScreen').style.display = 'none';
+    currentLevel = 1;
+    lives = 3;
+    score = 0;
+    coins = 0;
+    updateUI();
+    generateLevel(currentLevel);
+    resetPlayerPosition();
+    gameActive = true;
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(-cameraX, 0);
+
+    // Render Awan
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
+    clouds.forEach(c => {
+        let cx = c.x - cameraX * 0.25;
+        ctx.beginPath(); ctx.arc(cx, c.y, c.size * 12, 0, Math.PI * 2); ctx.arc(cx + c.size * 10, c.y - c.size * 4, c.size * 10, 0, Math.PI * 2); ctx.fill();
+    });
+
+    // Render Semak
+    ctx.fillStyle = '#00a844';
+    bushes.forEach(b => {
+        ctx.beginPath(); ctx.arc(b.x, GROUND_Y, 20, 0, Math.PI, true); ctx.arc(b.x + b.w/2, GROUND_Y, 28, 0, Math.PI, true); ctx.fill();
+    });
+
+    // Render Semua Rintangan/Tanah
+    platforms.forEach(p => drawBlock(ctx, p));
+
+    // Render Koin Melayang
+    items.forEach(coin => {
+        if (!coin.collected) {
+            ctx.fillStyle = '#fcc018'; ctx.beginPath();
+            let pW = 4 + Math.sin(mario.animFrame * 0.15) * 4;
+            ctx.ellipse(coin.x + 12, coin.y + 12, pW, 12, 0, 0, Math.PI * 2); ctx.fill();
+        }
+    });
+
+    // Render Tiang & Bendera
+    ctx.fillStyle = '#f0f0f0'; ctx.fillRect(flagpole.x, flagpole.y, flagpole.width, flagpole.height);
+    ctx.fillStyle = '#008000'; ctx.beginPath(); ctx.arc(flagpole.x + flagpole.width/2, flagpole.y, 10, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#18a020'; ctx.fillRect(flagpole.x + flagpole.width, flagpole.flagY, flagpole.flagW, flagpole.flagH);
+
+    // Render Mario
+    drawMario(ctx, mario);
+
+    ctx.restore();
+}
+
+function mainLoop() {
+    if (gameActive) {
+        update();
+        draw();
+    }
+    requestAnimationFrame(mainLoop);
+}
+
+// Mulai Inisialisasi Pertama Kali
+generateLevel(currentLevel);
+updateUI();
+mainLoop();
+</script>
+
+</body>
+</html>
